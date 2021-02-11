@@ -3,14 +3,17 @@ import matplotlib
 matplotlib.use('TKAgg')
 import matplotlib.pyplot as plt
 import glimpse
-from glimpse.imports import datetime,np,os
+import numpy as np
+import datetime
+import os
+
 import glob
 import itertools
 from os.path import join
 os.environ['OMP_NUM_THREADS'] = '1'
 #==============================================
 
-DATA_DIR = "/home/dunbar/Research/helheim/images/helheim"
+DATA_DIR = "/home/dunbar/Research/helheim/data/observations"
 DEM_DIR = os.path.join(DATA_DIR, 'dem')
 MAX_DEPTH = 30e3
 
@@ -21,8 +24,7 @@ observers = []
 for observer in observerpath:
     path = join(DATA_DIR,observer)
     campaths =  glob.glob(join(path,"*.JSON"))
-    images = [glimpse.Image(path=campath.replace(".JSON",".jpg"),cam=campath) for campath in campaths]
-    print("Image set {} \n".format(len(images)))
+    images = [glimpse.Image(path=campath.replace(".JSON",".jpg"),cam=glimpse.Camera.from_json(campath)) for campath in campaths]
     images.sort(key= lambda img: img.datetime)
     datetimes = np.array([img.datetime for img in images])
     for n, delta in enumerate(np.diff(datetimes)):
@@ -34,6 +36,7 @@ for observer in observerpath:
     [images.pop(_) for _ in negate]
 
     images = images[:int(len(images)/2)]
+    print("Image set {} \n".format(len(images)))
     obs = glimpse.Observer(list(np.array(images)),cache=False)
     observers.append(obs)
 #-------------------------
@@ -41,51 +44,46 @@ for observer in observerpath:
 
 #----------------------------
 # Prepare DEM 
-path = glob.glob(join(DEM_DIR,"*.tiff"))[0]
-dem = glimpse.Raster.read(path,d=10)
+path = glob.glob(join(DEM_DIR,"*.tif"))[0]
 print("DEM PATH: {}".format(path))
+dem = glimpse.Raster.open(path=path)
+
 dem.crop(zlim=(0, np.inf))
-dem.fill_crevasses(mask=~np.isnan(dem.Z), fill=True)
-
-
+dem.fill_crevasses(mask=~np.isnan(dem.array), fill=True)
 
 # ---- Prepare viewshed ----
-
 for obs in observers:
-    dem.fill_circle(obs.xyz, radius=100)
+    dem.fill_circle(obs.images[0].cam.xyz, radius=50)
 viewshed = dem.copy()
-viewshed.Z = np.ones(dem.shape, dtype=bool)
+viewshed.array = np.ones(dem.shape, dtype=bool)
 for obs in observers:
-    viewshed.Z &= dem.viewshed(obs.xyz)
+    viewshed.array &= dem.viewshed(obs.images[0].cam.xyz)
 
 print("\n *****Viewshed Done**** \n")
 # ---- Run Tracker ----
 xy = []
-xy0 = np.array((529042.35,7362755.95 ))
+xy0 = np.array([ 537000,7361500])[np.newaxis,:]
 #xy.append(xy0)
 
-xy = xy0 #+ np.vstack([xy for xy in itertools.product(range(-200, 200, 25), range(-200, 200, 25))])
+xy = [xy0] #qu+ np.vstack([xy for xy in itertools.product(range(-200, 200, 25), range(-200, 200, 25))])
 
-time_unit = datetime.timedelta(days=0.5)
-motion_models = [glimpse.CartesianMotionModel(
+# Helheim vels around 0.8 m/day
+
+time_unit = datetime.timedelta(days=1)
+motion_models = [glimpse.CartesianMotion(
     xyi, time_unit=time_unit, 
     dem=dem, 
     dem_sigma=2.5, 
     n=5000, 
-    xy_sigma=(1, 1),
-    vxyz_sigma=(.2, .2, 0.02),
+    xy_sigma=(0.5,0.5),
+    vxyz_sigma=(.4, .3, 0.02),
     axyz=(0,0,0), 
     axyz_sigma=(.25, .25, .05)) for xyi in xy]
 
-
-# motion_models = [glimpse.CylindricalMotionModel(
-#     xyi, time_unit=time_unit, dem=dem, dem_sigma=3, n=5000, xy_sigma=(2, 2),
-#     vrthz_sigma=(np.sqrt(50), np.pi, 0.2), arthz_sigma=(np.sqrt(8), 0.05, 0.2))
-#     for xyi in xy]
 tracker = glimpse.Tracker(observers=observers, viewshed=viewshed)
 print("\n****Tracking Now*****\n")
-tracks = tracker.track(motion_models=motion_models, tile_size=(15, 15),
-    parallel=False)
+tracks = tracker.track(motion_models=motion_models, parallel=True)
+print(tracks.errors)
 
 # ---- Plot tracks ----
 #tracks.plot_v1d(dim=1,mean=True)
